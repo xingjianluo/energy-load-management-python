@@ -57,6 +57,13 @@ def register_error_handlers(app: FastAPI) -> None:
     async def _app_error(_: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(status_code=exc.http_status, content=exc.to_payload())
 
+    from fastapi.exceptions import RequestValidationError
+
+    @app.exception_handler(RequestValidationError)
+    async def _request_validation(_: Request, exc: RequestValidationError) -> JSONResponse:
+        err = ValidationError("request validation failed")
+        return JSONResponse(status_code=err.http_status, content=err.to_payload())
+
     @app.exception_handler(Exception)
     async def _unhandled(_: Request, exc: Exception) -> JSONResponse:
         # 记录完整堆栈到日志，但对外只返回归一化错误码
