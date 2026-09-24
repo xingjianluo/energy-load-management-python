@@ -1,9 +1,9 @@
 """HTTP 接口：遥测接入、快照查询、调度评估与命令。"""
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Body, Request
 from pydantic import BaseModel
 
 from app.dispatch import LoadDispatcher
@@ -42,7 +42,7 @@ def list_devices(request: Request) -> dict:
 
 
 @router.post("/telemetry", response_model=BatchIngestResponse)
-def ingest_telemetry(payload: Any, request: Request) -> BatchIngestResponse:
+def ingest_telemetry(request: Request, payload: Annotated[Any, Body()]) -> BatchIngestResponse:
     """接入单条或批量遥测；每条独立判定，重复提交结果一致。"""
     svc = _telemetry(request)
     if isinstance(payload, list):

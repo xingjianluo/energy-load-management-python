@@ -38,7 +38,7 @@ def svc(settings) -> TelemetryService:
 
 @pytest.fixture()
 def client(settings):
-    app = create_app(settings)
+    app = create_app(settings, now=lambda: FIXED_NOW)
     with TestClient(app) as c:
         yield c
 
