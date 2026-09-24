@@ -73,8 +73,12 @@ class TelemetryService:
             settings.store_path + ".devices.json" if settings.store_path else None
         )
         self._load_registry()
-        for d in settings.known_devices:
-            self._devices.setdefault(d, "meter")
+        for entry in settings.known_devices:
+            device_id, _, kind = entry.partition(":")
+            if device_id:
+                self._devices.setdefault(
+                    device_id, kind if kind in DEVICE_KINDS else "meter"
+                )
         # 重放历史，重建最新值索引（不重复计量：仅更新内存视图）
         for ev in self._store.all_events():
             self._apply_to_view(ev)

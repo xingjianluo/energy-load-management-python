@@ -91,7 +91,7 @@ uv run pytest -q -s     # 查看单测日志（原始输入、判定依据、关
 | `ELM_RESTORE_THRESHOLD_KW` | 8.0 | 解除限载阈值（滞回下沿） |
 | `ELM_STORAGE_LOW_SOC` | 0.2 | 储能低电量阈值 |
 | `ELM_STORE_PATH` | 空（纯内存） | 事件持久化文件路径 |
-| `ELM_KNOWN_DEVICES` | 空 | 预注册设备（逗号分隔，默认 kind=meter） |
+| `ELM_KNOWN_DEVICES` | 空 | 预注册设备，逗号分隔，支持 `id` 或 `id:kind`（load/generator/storage/meter，缺省 meter） |
 
 ## API 一览
 

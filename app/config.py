@@ -19,7 +19,7 @@ class Settings:
     storage_low_soc: float = 0.2
     # 持久化文件（None 表示纯内存）
     store_path: str | None = None
-    # 已知设备注册表（逗号分隔）；空表示不启用设备白名单
+    # 已知设备注册表（逗号分隔，支持 id 或 id:kind）；空表示不启用预注册
     known_devices: tuple[str, ...] = ()
 
 
