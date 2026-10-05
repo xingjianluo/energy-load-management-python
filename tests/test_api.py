@@ -83,3 +83,38 @@ def test_rejected_telemetry_visible_in_response(client):
     log_case("api-reject", [p], r)
     assert r["rejected"] == 1
     assert r["results"][0]["reason"] == "unknown_device"
+
+
+def test_tiered_dispatch_endpoints(settings):
+    """分级模式下的状态/计划查询；旧字段保持兼容。"""
+    from fastapi.testclient import TestClient
+
+    from app.config import Settings
+    from main import create_app
+
+    tiered = Settings(
+        **{**settings.__dict__,
+           "controllable_loads": ("load1:1:3",),
+           "shed_target_margin_kw": 0.5}
+    )
+    from tests.conftest import FIXED_NOW as now
+    with TestClient(create_app(tiered, now=lambda: now)) as client:
+        client.post("/devices", json={"device_id": "load1", "kind": "load"})
+        client.post("/telemetry", json=make_payload("e1", value=10.4))
+        dec = client.post("/dispatch/evaluate").json()
+        log_case("api-tiered-evaluate", {"net": 10.4}, dec)
+        assert dec["level_after"] == 1 and dec["plan"]["status"] == "ok"
+        assert dec["plan"]["steps"] == [
+            {"device_id": "load1", "priority": 1, "shed_kw": 3.0}
+        ]
+        status = client.get("/dispatch/status").json()
+        log_case("api-tiered-status", None, status)
+        assert status["mode"] == "shedding"  # 旧字段不变
+        assert status["level"] == 1 and status["tiered"] is True
+        assert status["shed_loads"][0]["device_id"] == "load1"
+        plan = client.get("/dispatch/plan").json()
+        assert plan["level"] == 1 and plan["total_shed_kw"] == 3.0
+        # 决策历史结构兼容：旧字段齐全，新字段为增量
+        rec = client.get("/dispatch/decisions").json()[-1]
+        assert {"decision_id", "mode_before", "mode_after", "action",
+                "reasons", "snapshot", "thresholds"} <= rec.keys()

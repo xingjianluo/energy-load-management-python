@@ -64,7 +64,22 @@ def system_snapshot(request: Request):
 
 @router.get("/dispatch/status")
 def dispatch_status(request: Request) -> dict:
-    return {"mode": _dispatcher(request).mode}
+    """当前模式与分级档位（mode 字段保持旧结构不变，其余为新增）。"""
+    disp = _dispatcher(request)
+    plan = disp.current_plan()
+    return {
+        "mode": disp.mode,
+        "level": disp.level,
+        "tiered": disp.tiered,
+        "shed_loads": [s.model_dump() for s in plan.steps],
+        "total_shed_kw": plan.total_shed_kw,
+    }
+
+
+@router.get("/dispatch/plan")
+def dispatch_plan(request: Request) -> dict:
+    """当前生效的削减计划（只读，不产生决策记录）。"""
+    return _dispatcher(request).current_plan().model_dump(mode="json")
 
 
 @router.post("/dispatch/evaluate")

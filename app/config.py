@@ -21,6 +21,12 @@ class Settings:
     store_path: str | None = None
     # 已知设备注册表（逗号分隔，支持 id 或 id:kind）；空表示不启用预注册
     known_devices: tuple[str, ...] = ()
+    # 可控负载分级配置（逗号分隔 id:priority:sheddable_kw，priority 小者先削）；
+    # 空表示不启用分级削减，调度保持整体限载/恢复的旧行为
+    controllable_loads: tuple[str, ...] = ()
+    # 削减目标安全裕量（kW）：削减后净负荷须 < restore_threshold - margin，
+    # 保证真正落入可解除限载区间而非刚好低于触发线
+    shed_target_margin_kw: float = 0.5
 
 
 _ENV_MAP = {
@@ -30,6 +36,7 @@ _ENV_MAP = {
     "restore_threshold_kw": ("ELM_RESTORE_THRESHOLD_KW", float),
     "storage_low_soc": ("ELM_STORAGE_LOW_SOC", float),
     "store_path": ("ELM_STORE_PATH", str),
+    "shed_target_margin_kw": ("ELM_SHED_TARGET_MARGIN_KW", float),
 }
 
 
@@ -45,5 +52,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     if devices:
         kwargs["known_devices"] = tuple(
             d.strip() for d in devices.split(",") if d.strip()
+        )
+    loads = env.get("ELM_CONTROLLABLE_LOADS", "")
+    if loads:
+        kwargs["controllable_loads"] = tuple(
+            e.strip() for e in loads.split(",") if e.strip()
         )
     return Settings(**kwargs)  # type: ignore[arg-type]

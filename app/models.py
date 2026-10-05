@@ -80,6 +80,43 @@ class SystemSnapshot(BaseModel):
     devices: dict[str, DeviceSnapshot] = Field(default_factory=dict)
 
 
+class PlanStatus(str, Enum):
+    """分级削减计划的对外结果（稳定且可区分）。"""
+
+    OK = "ok"  # 计划完整可执行（含无需动作的保持）
+    INSUFFICIENT_CAPACITY = "insufficient_capacity"  # 全部可削减容量仍压不到目标区间
+    MISSING_LOAD_CONFIG = "missing_load_config"  # 有可控负载缺优先级/容量等必需信息
+    INVALID_INPUT = "invalid_input"  # 输入状态不合法，算不出有效净负荷
+
+
+class ControllableLoad(BaseModel):
+    """可控负载的分级配置：优先级数值越小越先被削减。"""
+
+    device_id: str
+    priority: int
+    sheddable_kw: float
+
+
+class ShedStep(BaseModel):
+    """计划中对单个负载的削减步（按削减顺序排列）。"""
+
+    device_id: str
+    priority: int
+    shed_kw: float
+
+
+class ShedPlan(BaseModel):
+    """一份确定的分级削减计划：目标档位、各负载削减量、削减后净负荷。"""
+
+    level: int = 0  # 目标档位：0=不削减，L=按优先级顺序削减前 L 个负载
+    steps: list[ShedStep] = Field(default_factory=list)
+    total_shed_kw: float = 0.0
+    projected_net_load_kw: float | None = None  # 削减后预计净负荷
+    target_net_load_kw: float | None = None  # 目标区间上沿（须严格落入其下）
+    status: PlanStatus = PlanStatus.OK
+    reasons: list[str] = Field(default_factory=list)
+
+
 class DecisionRecord(BaseModel):
     """一次调度决策，可追溯到输入快照与判定依据。"""
 
@@ -91,6 +128,39 @@ class DecisionRecord(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     snapshot: SystemSnapshot
     thresholds: dict[str, float] = Field(default_factory=dict)
+    # 分级削减扩展（缺省值保证旧记录/旧调用兼容）
+    level_before: int = 0
+    level_after: int = 0
+    plan: ShedPlan | None = None
+
+
+def parse_controllable_loads(
+    entries: tuple[str, ...] | list[str],
+) -> tuple[list[ControllableLoad], list[str]]:
+    """解析 `id:priority:sheddable_kw` 配置项。
+
+    返回 (有效负载列表, 非法原始项列表)。有效列表按 (priority, device_id)
+    升序排序，即削减顺序；非法项原样保留以便对外给出可区分结果。
+    """
+    loads: list[ControllableLoad] = []
+    invalid: list[str] = []
+    for raw in entries:
+        parts = [p.strip() for p in raw.split(":")]
+        try:
+            if len(parts) != 3 or not parts[0]:
+                raise ValueError("expect id:priority:sheddable_kw")
+            load = ControllableLoad(
+                device_id=parts[0],
+                priority=int(parts[1]),
+                sheddable_kw=float(parts[2]),
+            )
+            if load.sheddable_kw <= 0:
+                raise ValueError("sheddable_kw must be > 0")
+            loads.append(load)
+        except ValueError:
+            invalid.append(raw)
+    loads.sort(key=lambda l: (l.priority, l.device_id))
+    return loads, invalid
 
 
 # 已注册的指标及其合法单位（未知指标不破坏既有查询，仅被拒绝并记录原因）
