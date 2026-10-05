@@ -58,14 +58,51 @@ uv run pytest -q -s     # 查看单测日志（原始输入、判定依据、关
 每次决策生成 `DecisionRecord`（GET /dispatch/decisions）：输入快照、
 判定依据（reasons）、当时阈值、模式迁移，完全可追溯。
 
+### 分级削减（按优先级）
+
+可控负载通过 `ELM_CONTROLLABLE_LOADS` 或 `POST /dispatch/loads` 配置，
+每个负载有两个必需属性：
+
+- `priority`：整数 ≥ 0，**数值越大越重要**（越晚被削减、越早被恢复）；
+  同优先级按 `device_id` 字典序排序，结果确定。
+- `sheddable_kw`：可削减容量（kW，> 0）。
+
+**档位**：所有可控负载按削减顺序（priority 升序）排列，档位 L 表示前 L 个
+负载处于削减状态，档位 0 = 未削减。触发限载时不再整体动作，而是产出明确的
+削减计划（`DecisionRecord.plan`）：目标档位、削减哪些负载、各减多少、
+削减后净负荷 `net_after_kw`。目标档位取**最小**使
+`net_after < restore_threshold_kw` 的档位——净负荷真正落进可解除区间，
+而不是刚好比触发线低一点。
+
+**档位迁移与滞回**：SHEDDING 下有效净负荷（`net_load - 已削减量`）仍高于
+触发线则升档；毛净负荷低于恢复线且 soc 达标则一次性归还到档位 0，
+归还明细按优先级降序（最重要先恢复）。恢复要求毛净负荷低于恢复线，
+保证恢复后不会立刻重新触发（不会刚降下去又弹回来）；滞回带内保持不动。
+
+**幂等**：目标档位由快照确定性算出（绝对量，非增量），同一份快照反复评估
+结果完全一致，不会评估一次就再叠加一次削减量。
+
+**兜底结果**（`DecisionRecord.outcome`，稳定且可区分）：
+
+- `ok`：正常完成（含 no-op 保持）
+- `insufficient_capacity`：全部可控容量削减完仍压不到恢复线以下；
+  此时削减**全部**可用容量（不停在一半），状态一致
+- `invalid_input`：快照非法（NaN/无穷、soc 越界），不动作、状态不变
+- `invalid_load_config`：可控负载缺少优先级/容量等必需信息，不动作、状态不变
+
+当前档位与生效中的削减明细见 `GET /dispatch/status`
+（`mode`/`level`/`sheds`/`total_shed_kw`）。
+
 ## 幂等与并发保证
 
 - 同一批数据重复提交：结果从 `accepted` 变为 `duplicate`，状态与历史口径不变。
 - 所有状态变更在锁内完成：同一 `event_id` 并发提交恰好一个 `accepted`；
   冲突命令（shed/restore）并发到达时被串行化，只产生一个确定的模式迁移，
   后到命令得到确定性的 no-op。
-- 持久化：`ELM_STORE_PATH` 设置后，事件与决策追加写入 JSONL（写后 fsync）。
-  重启重放不重复计量、不丢失已接受事件；损坏行被跳过，不污染整体状态。
+- 持久化：`ELM_STORE_PATH` 设置后，事件与决策追加写入 JSONL（写后 fsync），
+  可控负载配置持久化到 `<store_path>.loads.json`。
+  重启重放不重复计量、不丢失已接受事件；已生效的档位、被削减负载与历史口径
+  与重启前一致；损坏行被跳过，不污染整体状态。
   部分写入失败抛 `store_unavailable`，内存状态不被污染。
 
 ## 错误归一化
@@ -77,6 +114,11 @@ uv run pytest -q -s     # 查看单测日志（原始输入、判定依据、关
 ## 兼容范围
 
 - 既有 `GET /` 行为不变（`{"Hello": "World"}`）。
+- 既有调度接口与返回结构保持兼容：`/dispatch/status` 的 `mode`、
+  `DecisionRecord` 的 `action`/`mode_after`/`reasons`/`thresholds` 等字段不变，
+  分级字段（`outcome`/`level_*`/`plan`）为新增，旧客户端可忽略；
+  未配置任何可控负载时行为与分级前一致（整体进入/解除限载）。
+- 旧版本决策 JSONL 可直接重放（新增字段有默认值）。
 - 未知新指标：拒绝并给出 `unknown_metric`，不影响既有数据与查询。
 - 未知新字段：原样保留，历史与快照查询不受影响。
 - 存储格式为追加式 JSONL，旧版本文件可直接重放。
@@ -92,6 +134,27 @@ uv run pytest -q -s     # 查看单测日志（原始输入、判定依据、关
 | `ELM_STORAGE_LOW_SOC` | 0.2 | 储能低电量阈值 |
 | `ELM_STORE_PATH` | 空（纯内存） | 事件持久化文件路径 |
 | `ELM_KNOWN_DEVICES` | 空 | 预注册设备，逗号分隔，支持 `id` 或 `id:kind`（load/generator/storage/meter，缺省 meter） |
+| `ELM_CONTROLLABLE_LOADS` | 空 | 可控负载，逗号分隔，格式 `id:priority:sheddable_kw`（如 `ac:1:3.0,hvac:2:4.0`）；条目非法时启动即失败 |
+
+## 本地验证
+
+```bash
+uv run pytest -q -s tests/test_graded_dispatch.py  # 分级削减专项（含用例日志）
+uv run pytest -q                                    # 全量回归
+```
+
+手动验证（服务启动后）：
+
+```bash
+curl -X POST localhost:8000/dispatch/loads -H 'content-type: application/json' \
+  -d '{"device_id":"ac","priority":1,"sheddable_kw":3.0}'
+curl -X POST localhost:8000/dispatch/loads -H 'content-type: application/json' \
+  -d '{"device_id":"hvac","priority":2,"sheddable_kw":4.0}'
+# 上报 11.5kW 负载后评估：应削减 ac+hvac，net_after < 8
+curl -X POST localhost:8000/dispatch/evaluate
+curl localhost:8000/dispatch/status     # mode/level/sheds
+curl localhost:8000/dispatch/decisions  # 可追溯：快照、判定依据、计划
+```
 
 ## API 一览
 
@@ -102,7 +165,9 @@ uv run pytest -q -s     # 查看单测日志（原始输入、判定依据、关
 | POST | `/telemetry` | 单条/批量遥测接入 |
 | GET | `/telemetry/history?device_id=` | 已接受事件历史 |
 | GET | `/snapshot` | 系统实时快照 |
-| GET | `/dispatch/status` | 当前模式 |
+| GET | `/dispatch/status` | 当前模式、削减档位与生效中的削减明细 |
 | POST | `/dispatch/evaluate` | 用当前快照评估一次调度 |
 | POST | `/dispatch/command` | 手动 `shed` / `restore` |
+| POST | `/dispatch/loads` | 注册/更新可控负载（`priority` + `sheddable_kw`） |
+| GET | `/dispatch/loads` | 可控负载配置列表（按削减顺序） |
 | GET | `/dispatch/decisions` | 决策历史（可追溯） |

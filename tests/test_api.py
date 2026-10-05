@@ -83,3 +83,43 @@ def test_rejected_telemetry_visible_in_response(client):
     log_case("api-reject", [p], r)
     assert r["rejected"] == 1
     assert r["results"][0]["reason"] == "unknown_device"
+
+
+def test_graded_dispatch_api_and_compat(client):
+    """分级接口可用；既有字段（mode/action/decisions）保持兼容。"""
+    # 注册可控负载（优先级 + 可削减容量）
+    r = client.post("/dispatch/loads",
+                    json={"device_id": "ac", "priority": 1, "sheddable_kw": 3.0})
+    assert r.status_code == 201
+    client.post("/dispatch/loads",
+                json={"device_id": "hvac", "priority": 2, "sheddable_kw": 4.0})
+    loads = client.get("/dispatch/loads").json()
+    log_case("api-list-loads", None, loads)
+    assert [l["device_id"] for l in loads] == ["ac", "hvac"]  # 按削减顺序
+
+    # 非法配置：可区分的 422
+    r = client.post("/dispatch/loads",
+                    json={"device_id": "bad", "priority": 1, "sheddable_kw": -1})
+    log_case("api-bad-load", {"sheddable_kw": -1}, r.json())
+    assert r.status_code == 422 and r.json()["error"]["code"] == "validation_error"
+
+    # 制造净负荷 11.5kW 并评估
+    client.post("/devices", json={"device_id": "load1", "kind": "load"})
+    client.post("/telemetry", json=make_payload("g1", value=11.5))
+    dec = client.post("/dispatch/evaluate").json()
+    log_case("api-graded-evaluate", {"net": 11.5}, dec)
+    assert dec["action"] == "shed" and dec["mode_after"] == "shedding"  # 旧字段兼容
+    assert dec["outcome"] == "ok" and dec["level_after"] == 2
+    assert [i["device_id"] for i in dec["plan"]["shed"]] == ["ac", "hvac"]
+    assert dec["plan"]["net_after_kw"] < 8.0
+
+    status = client.get("/dispatch/status").json()
+    log_case("api-graded-status", None, status)
+    assert status["mode"] == "shedding"  # 旧字段保留
+    assert status["level"] == 2 and status["sheds"] == {"ac": 3.0, "hvac": 4.0}
+
+    # 重复评估不叠加；历史可追溯
+    dec2 = client.post("/dispatch/evaluate").json()
+    assert dec2["action"] == "none" and dec2["level_after"] == 2
+    decisions = client.get("/dispatch/decisions").json()
+    assert decisions[-1]["plan"]["shed"] == dec["plan"]["shed"]

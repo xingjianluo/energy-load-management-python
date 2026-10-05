@@ -21,6 +21,9 @@ class Settings:
     store_path: str | None = None
     # 已知设备注册表（逗号分隔，支持 id 或 id:kind）；空表示不启用预注册
     known_devices: tuple[str, ...] = ()
+    # 可控负载（逗号分隔，格式 id:priority:sheddable_kw）；
+    # priority 为整数，数值越大越重要（越晚削减、越早恢复）
+    controllable_loads: tuple[str, ...] = ()
 
 
 _ENV_MAP = {
@@ -45,5 +48,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     if devices:
         kwargs["known_devices"] = tuple(
             d.strip() for d in devices.split(",") if d.strip()
+        )
+    loads = env.get("ELM_CONTROLLABLE_LOADS", "")
+    if loads:
+        kwargs["controllable_loads"] = tuple(
+            e.strip() for e in loads.split(",") if e.strip()
         )
     return Settings(**kwargs)  # type: ignore[arg-type]

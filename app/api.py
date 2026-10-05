@@ -31,6 +31,12 @@ class DispatchCommand(BaseModel):
     command: str  # shed | restore
 
 
+class LoadRegistration(BaseModel):
+    device_id: str
+    priority: int  # 数值越大越重要（越晚削减、越早恢复）
+    sheddable_kw: float  # 可削减容量（kW，> 0）
+
+
 @router.post("/devices", status_code=201)
 def register_device(body: DeviceRegistration, request: Request) -> dict:
     return _telemetry(request).register_device(body.device_id, body.kind)
@@ -64,7 +70,25 @@ def system_snapshot(request: Request):
 
 @router.get("/dispatch/status")
 def dispatch_status(request: Request) -> dict:
-    return {"mode": _dispatcher(request).mode}
+    """当前模式、削减档位与生效中的削减明细（mode 字段保持兼容）。"""
+    return _dispatcher(request).status()
+
+
+@router.post("/dispatch/loads", status_code=201)
+def register_load(body: LoadRegistration, request: Request) -> dict:
+    """注册/更新可控负载的优先级与可削减容量。"""
+    try:
+        return _dispatcher(request).register_load(
+            body.device_id, body.priority, body.sheddable_kw
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+
+
+@router.get("/dispatch/loads")
+def list_loads(request: Request) -> list[dict]:
+    """全部可控负载配置（按削减顺序）。"""
+    return _dispatcher(request).list_loads()
 
 
 @router.post("/dispatch/evaluate")

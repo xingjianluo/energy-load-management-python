@@ -44,6 +44,42 @@ class LoadAction(str, Enum):
     RESTORE = "restore"  # 解除限载
 
 
+class DecisionOutcome(str, Enum):
+    """一次评估/命令的对外结果（稳定且可区分）。"""
+
+    OK = "ok"  # 正常完成（含 no-op 保持）
+    INSUFFICIENT_CAPACITY = "insufficient_capacity"  # 全部可削减容量仍压不到目标区间
+    INVALID_INPUT = "invalid_input"  # 输入快照非法，算不出有效净负荷
+    INVALID_LOAD_CONFIG = "invalid_load_config"  # 可控负载缺少优先级/容量等必需信息
+
+
+class ControllableLoad(BaseModel):
+    """可控负载配置：priority 数值越大越重要（越晚削减、越早恢复）。"""
+
+    device_id: str
+    priority: int
+    sheddable_kw: float
+
+
+class ShedItem(BaseModel):
+    """削减计划中对单个负载的一项动作/状态。"""
+
+    device_id: str
+    priority: int
+    shed_kw: float
+
+
+class ShedPlan(BaseModel):
+    """一份明确的削减计划：目标档位、削减/归还明细、削减后净负荷。"""
+
+    target_level: int = 0
+    net_before_kw: float = 0.0  # 快照毛净负荷（未削减口径）
+    net_after_kw: float = 0.0  # 应用目标档位后的净负荷
+    shed: list[ShedItem] = Field(default_factory=list)  # 目标档位下全部被削减负载（绝对量）
+    applied: list[ShedItem] = Field(default_factory=list)  # 本次迁移新削减的
+    restored: list[ShedItem] = Field(default_factory=list)  # 本次迁移归还的（按优先级降序）
+
+
 class IngestResult(BaseModel):
     """单条遥测的稳定、可区分处理结果。"""
 
@@ -91,6 +127,11 @@ class DecisionRecord(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     snapshot: SystemSnapshot
     thresholds: dict[str, float] = Field(default_factory=dict)
+    # 分级削减扩展（默认值保证旧版 JSONL 记录可直接重放）
+    outcome: DecisionOutcome = DecisionOutcome.OK
+    level_before: int = 0
+    level_after: int = 0
+    plan: ShedPlan | None = None
 
 
 # 已注册的指标及其合法单位（未知指标不破坏既有查询，仅被拒绝并记录原因）
